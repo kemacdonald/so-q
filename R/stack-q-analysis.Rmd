@@ -1,0 +1,104 @@
+---
+title: "Stack-Questions Analysis"
+author: "Kyle MacDonald"
+date: "11/6/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=T, warning=F, cache=F, message=F, sanitize = T)
+library(tidyverse)
+library(knitr)
+theme_set(theme_bw())
+```
+
+Load data. This is organized as three tables:
+
+* Questions contains the title, body, creation date, score, and owner ID for each R question.
+* Answers contains the body, creation date, score, and owner ID for each of the answers to these questions. The ParentId column links back to the Questions table.
+* Tags contains the tags on each question besides the R tag.
+
+```{r load_data, echo = FALSE, cache = T}
+#answers <- read_csv("../data/Answers.csv", progress = FALSE)
+questions <- read_csv("../data/Questions.csv", progress = FALSE)
+#tags <- read_csv("../data/Tags.csv", progress = FALSE)
+```
+
+### Descriptives and sanity checks
+
+```{r n_users}
+n.users <- questions %>% 
+  select(OwnerUserId) %>% 
+  unique() %>% 
+  count()
+
+n.questions <- nrow(questions)
+```
+
+There are `r n.users` unique users and `r n.questions` questions in the dataset.
+
+### Score analysis
+
+What is the distribution over the *Score* variable? 
+
+```{r score_dist}
+ggplot(aes(x = Score), data = questions) + 
+  geom_histogram()
+```
+
+Looks like there are a couple of extreme values here, preventing us from getting a feel for the distribution. We can filter scores that are greater than +/- 2SD from the mean of score.
+
+```{r}
+questions %>% 
+  filter(Score <= mean(Score) + 2*sd(Score), 
+         Score >= mean(Score) - 2*sd(Score)) %>% 
+  ggplot(aes(x = Score), data = .) + 
+  geom_histogram(bins = 30)
+```
+
+This distribution is looking more reasonable. But what does it mean to get negative score? Let's look at a small sample of the questions with the lowest scores to see what's going on. 
+
+```{r sample_neg_questions}
+worst.qs <- questions %>% 
+  select(Score, Body) %>%
+  arrange(Score) %>% 
+  head(n=5) 
+```
+
+```{r sample_best_questions}
+best.qs <- questions %>% 
+  select(Score, Body) %>%
+  arrange(desc(Score)) %>% 
+  head(n=5) 
+```
+
+TODO: figure out the best way to render the html in the Body variable. 
+
+### Looking for users
+
+What is the distribution of questions over users? First we compute some basic descriptives.
+
+```{r}
+ss.qs <- questions %>% 
+  filter(is.na(OwnerUserId) == F) %>% 
+  group_by(OwnerUserId) %>% 
+  count() 
+
+q.sum <- summary(ss.qs$n)
+```
+
+The average number of questions per user is `r summary(ss.qs$n)["Mean"]`. The min is `r summary(ss.qs$n)["Min."]` (makes sense) and the max is `r summary(ss.qs$n)["Max."]` (wow, that's a lot of questions!).
+
+Let's take a look at the person who asked 357 questions to see what kind of questions they are asking and over what time frame they asked these questions. 
+
+```{r}
+max.q.id <- ss.qs %>% 
+  filter(n == summary(ss.qs$n)["Max."]) %>% 
+  select(OwnerUserId) %>% 
+  as.character()
+
+ss.max <- questions %>% 
+  filter(OwnerUserId == max.q.id)
+```
+
+

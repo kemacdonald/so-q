@@ -5,14 +5,23 @@ date: "11/6/2016"
 output: html_document
 ---
 
+## Setup
+
 ```{r setup, include=FALSE}
+rm(list=ls())
 knitr::opts_chunk$set(echo=T, warning=F, cache=F, message=F, sanitize = T)
+library(lme4)
 library(tidyverse)
+library(magrittr)
 library(knitr)
+library(stringr)
+library(lubridate)
 theme_set(theme_bw())
 ```
 
-Load data. This is organized as three tables:
+## Load data. 
+
+These data are organized into three tables:
 
 * Questions contains the title, body, creation date, score, and owner ID for each R question.
 * Answers contains the body, creation date, score, and owner ID for each of the answers to these questions. The ParentId column links back to the Questions table.
@@ -22,6 +31,15 @@ Load data. This is organized as three tables:
 #answers <- read_csv("../data/Answers.csv", progress = FALSE)
 questions <- read_csv("../data/Questions.csv", progress = FALSE)
 #tags <- read_csv("../data/Tags.csv", progress = FALSE)
+```
+
+Add year, month, and day columns using the date-time variable.
+
+```{r}
+questions %<>%
+  mutate(yr = year(CreationDate),
+         mon = month(CreationDate), 
+         dy = day(CreationDate))
 ```
 
 ### Descriptives and sanity checks
@@ -35,7 +53,7 @@ n.users <- questions %>%
 n.questions <- nrow(questions)
 ```
 
-There are `r n.users` unique users and `r n.questions` questions in the dataset.
+There are `r n.users$n` unique users and `r n.questions` questions in the dataset.
 
 ### Score analysis
 
@@ -49,14 +67,16 @@ ggplot(aes(x = Score), data = questions) +
 Looks like there are a couple of extreme values here, preventing us from getting a feel for the distribution. We can filter scores that are greater than +/- 2SD from the mean of score.
 
 ```{r}
-questions %>% 
+q.filt <- questions %>% 
   filter(Score <= mean(Score) + 2*sd(Score), 
-         Score >= mean(Score) - 2*sd(Score)) %>% 
-  ggplot(aes(x = Score), data = .) + 
+         Score >= mean(Score) - 2*sd(Score),
+         year(CreationDate) > 2008)
+  
+ggplot(aes(x = Score), data = q.filt) + 
   geom_histogram(bins = 30)
 ```
 
-This distribution is looking more reasonable. But what does it mean to get negative score? Let's look at a small sample of the questions with the lowest scores to see what's going on. 
+This distribution looks more reasonable. But what does it mean to get negative score? Let's look at a small sample of the questions with the lowest scores to see what's going on. 
 
 ```{r sample_neg_questions}
 worst.qs <- questions %>% 
@@ -74,26 +94,38 @@ best.qs <- questions %>%
 
 TODO: figure out the best way to render the html in the Body variable. 
 
-### Looking for users
+### User analysis
 
 What is the distribution of questions over users? First we compute some basic descriptives.
 
 ```{r}
-ss.qs <- questions %>% 
+ss.qs <- q.filt %>% 
   filter(is.na(OwnerUserId) == F) %>% 
   group_by(OwnerUserId) %>% 
-  count() 
+  summarise(count = n(),
+            mean_score = mean(Score),
+            med_score = median(Score))
 
-q.sum <- summary(ss.qs$n)
+q.sum <- summary(ss.qs$count)
 ```
 
-The average number of questions per user is `r summary(ss.qs$n)["Mean"]`. The min is `r summary(ss.qs$n)["Min."]` (makes sense) and the max is `r summary(ss.qs$n)["Max."]` (wow, that's a lot of questions!).
+The average number of questions per user is `r summary(ss.qs$count)["Mean"]`. The min is `r summary(ss.qs$count)["Min."]` (makes sense) and the max is `r summary(ss.qs$count)["Max."]` (wow, that's a lot of questions!).
+
+```{r}
+ggplot(aes(x = count), data = ss.qs) +
+  geom_histogram() +
+  xlim(0,15)
+```
+
+Most median scores are below 10.
+
+### Analyze the most prolific question-asker
 
 Let's take a look at the person who asked 357 questions to see what kind of questions they are asking and over what time frame they asked these questions. 
 
 ```{r}
 max.q.id <- ss.qs %>% 
-  filter(n == summary(ss.qs$n)["Max."]) %>% 
+  filter(count == summary(ss.qs$count)["Max."]) %>% 
   select(OwnerUserId) %>% 
   as.character()
 
@@ -101,4 +133,217 @@ ss.max <- questions %>%
   filter(OwnerUserId == max.q.id)
 ```
 
+Plot this user's question scores over time.
+
+```{r}
+ggplot(aes(x = CreationDate, y = Score), data = ss.max) +
+  geom_line() +
+  geom_smooth(method = "loess")
+```
+
+Hmm, not much of a change in Score over time. So maybe this user was always good at asking questions?
+
+Their mean question score is `r mean(ss.max$Score)` which is higher than mean for the group: `r mean(ss.qs$med_score)`
+
+Now I'm curious about the distribution of average question scores over users.
+
+```{r}
+ggplot(aes(x = med_score), data = filter(ss.qs, count > 1)) +
+  geom_density(adjust = 3) +
+  xlim(-5, 10) +
+  labs(x = "User's Median Score")
+```
+
+### Has question quality changed over time?
+
+Since there is so much data I'm going to subset to just the last two years.
+
+```{r}
+q.filt %>% 
+  filter(year(CreationDate) >= 2015) %>% 
+  ggplot(aes(x = CreationDate, y = Score), data = .) + 
+  geom_line() +
+  ylim(-30, 30)
+```
+
+Still way too much data. So I'm going to aggregate to get the mean score for each year and month, and then plot to see if there are any patterns.
+
+```{r}
+ci.fun <- function(df, column_name, threshold = 0.975) {
+  data_vec <- df[[column_name]]
+  # get the mean, standard deviation, and sample size
+  m <- mean(data_vec, na.rm=T)
+  stdev <- sd(data_vec, na.rm=T)
+  n <- length(data_vec)
+  # compute 95% ci bounds
+  ci_bound_upper <- m + qnorm(threshold)*stdev/sqrt(n)
+  ci_bound_lower <- m - qnorm(threshold)*stdev/sqrt(n)
+
+  df %<>%
+    mutate(m = m,
+           ci_upper = ci_bound_upper,
+           ci_lower = ci_bound_lower,
+           n = n) %>% 
+    select(y, n, m:ci_lower) %>% 
+    unique()
+  return(df)
+}
+
+```
+
+```{r}
+q.agg <- q.filt %>%
+  group_by(y = year(CreationDate)) %>% 
+  do(ci.fun(df = ., column_name = "Score", threshold = 0.975)) 
+```
+
+```{r}
+ggplot(aes(x = y, y = m, color = n), data = q.agg) + 
+  geom_smooth(method = "loess", se = F, color = "darkorange") + 
+  geom_pointrange(aes(ymin = ci_lower, ymax = ci_upper), size = 1) +
+  labs(
+    x = "Year",
+    y = "Mean Score"
+  )
+```
+
+Mean question scores decrease. There is also a ton of questions in each year (10-30k) so we get precise estimates of the mean. I think that all this is telling us is that more time on Stack Overflow allows more people to see the questions, leading to higher scores. Basically, an analysis at this level of granularity doesn't tell us much about what features of questions will predict a high score.
+
+### How has the number of questions about R changed over time?
+
+```{r}
+q.filt %>% 
+  group_by(y = year(CreationDate)) %>% 
+  summarise(n = n(),
+            m.score = mean(Score, na.rm = T)) %>% 
+  ggplot(aes(x = y, y = n)) + 
+  geom_line() +
+  geom_point(aes(size = m.score)) +
+  labs(
+    x = "Year",
+    y = "Num. Q.",
+    size = "Mean Q. Score"
+  )
+```
+
+### Any information in the question title?
+
+Compute the length of the title for each question.
+
+```{r}
+q.filt %<>% 
+  mutate(title_length = str_length(Title),
+         log_title_length = log(title_length),
+         question_length = str_length(Body),
+         log_question_length = log(question_length))
+```
+
+What's the relationship between title length and question score? Since we have so much data, we are going to aggreate to get the average title length for each Score.
+
+```{r, fig.width=8}
+q.filt %>% 
+  ungroup() %>% 
+  filter(year(CreationDate) == 2015) %>% 
+  group_by(Score) %>% 
+  summarise(m.log = mean(log_title_length),
+            n = n()) %>% 
+  ggplot(aes(x = Score, y = m.log)) +
+  geom_point(aes(size = n)) +
+  geom_line() +
+  geom_vline(xintercept = 0)
+```
+
+That's pretty much a flat line, so knowing the length of the question doesn't tell you much about it's score.
+
+## NLP over Body of question
+
+First we need to separate the code from the natural language.
+
+```{r}
+
+```
+
+Then we can do NLP to the natural language to see if any features of the questions predict better scores. 
+
+What proportion of the questions contain code?
+
+```{r}
+q.filt %<>% mutate(q_has_code = str_detect(Body, "<code>"))
+```
+
+```{r}
+q.filt %>% 
+  group_by(q_has_code) %>% 
+  summarise(prop = round(n() / nrow(.), 2)) %>% 
+  kable()
+```
+
+Most of the questions have code in them, which is nice to know. Does having code in your question lead to a higher question score?
+
+```{r, fig.width=8}
+q.filt %>% 
+  mutate(y = as.factor(year(CreationDate))) %>% 
+  ggplot(aes(x = y, y = Score, fill = q_has_code)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("darkorange", "dodgerblue"))
+```
+
+Hmm, a few things to note: First, you can see the overall decline in question scores over time, which I think just reflects how long the question has been available on Stack Overflow. Second, question scores are mostly between 0-4, but there are lots of outliers, especially in the more recent years. Third, there are no extreme negative scores until 2010/2011. And fourth, I'm not sure we should be modeling Score as a continous outcome, but I'm hesistant to "lose information" by converting it to a categorical variable. 
+
+### Question "body" analyses
+
+```{r}
+q.body <- q.filt %>% 
+  filter(year(CreationDate) > 2008, 
+         is.na(question_length) == F) %>% 
+  filter(question_length <= mean(question_length) + (2 * sd(question_length))) 
+```
+
+```{r}
+q.body %>% 
+  group_by(Score, yr = year(CreationDate)) %>% 
+  summarise(m = mean(log_question_length, na.rm=T),
+            n = n()) %>%
+  ungroup() %>% 
+  filter(n >= mean(n) - (3 * sd(n)),
+         n <= mean(n) + (3 * sd(n))) %>% 
+  ggplot(aes(x = m, y = Score, color = as.factor(yr))) +
+  geom_smooth(method = "lm", se = F, linetype = "solid", alpha = 0.2) +
+  geom_point(aes(size = n), alpha = 0.5) +
+  geom_smooth(aes(x = m, y = Score), method = "lm", se = T, 
+              inherit.aes = F, color = "dodgerblue", size = 1.5) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(color = "Year")
+```
+
+Question length seems to be the first evidence of something that predicts score. But we should really be plotting the raw data (on the log scale):
+
+```{r}
+q.body %>% 
+  sample_n(size = 0.5 * nrow(.)) %>% 
+  ggplot(aes(x = question_length, y = Score)) +
+  geom_point(alpha = 0.1) + 
+  facet_wrap(~yr) +
+  geom_smooth(aes(color=q_has_code), method = "loess", se = F)
+```
+
+Interesting. When I plot the raw data, it's looks like there is no relationship between question length and Score. 
+
+Let's quantify this relationship using a linear mixed effects model.
+
+```{r}
+m1 <- lmer(Score ~ log_question_length * log_title_length * q_has_code +
+             (1|OwnerUserId), 
+           data = q.body)
+```
+
+```{r}
+broom::tidy(m1) %>% kable(digits = 5)
+```
+
+Hmm, some significant terms here, but it's hard to interpret what coeficients on the log scale, so let's convert them back to the question/title length scale in characters. 
+
+```{r}
+#TODO
+```
 

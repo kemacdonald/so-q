@@ -1,0 +1,133 @@
+---
+title: "Stack-Answers Analysis"
+author: "Kyle MacDonald"
+date: "11/25/2016"
+output: html_document
+---
+---
+title: "Stack-Tags Analysis"
+author: "Kyle MacDonald"
+date: "11/25/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo=T, warning=F, cache=F, message=F, sanitize = T)
+library(lme4)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(stringr)
+library(lubridate)
+theme_set(theme_bw())
+```
+
+## Load and clean dataset
+
+These data are organized into three tables:
+
+* Questions contains the title, body, creation date, score, and owner ID for each R question.
+* Answers contains the body, creation date, score, and owner ID for each of the answers to these questions. The ParentId column links back to the Questions table.
+* Tags contains the tags on each question besides the R tag.
+
+```{r load_data, echo = FALSE, cache = T}
+answers <- read_csv("../data/Answers.csv", progress = FALSE)
+questions <- read_csv("../data/Questions.csv", progress = FALSE)
+#tags <- read_csv("../data/Tags.csv", progress = FALSE)
+```
+
+Merge question information with tags.
+
+```{r}
+answers <- questions %>% 
+  select(ParentId = Id, Score.q = Score, 
+         OwnerUserId.q = OwnerUserId, 
+         CreationDate.q = CreationDate) %>% 
+  left_join(answers, ., by = "ParentId")
+```
+
+Split date-time variable for both questions and answers.
+
+```{r}
+answers %<>% 
+  mutate(yr.a = year(CreationDate),
+         mon.a = month(CreationDate), 
+         dy.a = day(CreationDate),
+         yr.q = year(CreationDate.q),
+         mon.q = month(CreationDate.q), 
+         dy.q = day(CreationDate.q))
+```
+
+Filter dataset. Remove questions and answers with extreme scores and remove the year 2008, which did not have very much data.
+
+```{r}
+answers %<>%
+   filter(Score <= mean(Score) + 2*sd(Score), 
+         Score >= mean(Score) - 2*sd(Score),
+         Score.q <= mean(Score.q) + 2*sd(Score.q), 
+         Score.q >= mean(Score.q) - 2*sd(Score.q),
+         year(CreationDate) > 2008)
+``` 
+
+
+## Descriptives
+
+#### What is the distribution of answer scores.
+
+```{r}
+answers %>% 
+  ggplot(aes(x = Score)) +
+  geom_histogram(bins = 20)
+```
+
+Scores fall between [-2, 20] with the majority of the scores being between [0,6].
+
+#### What is the distribution of the number of answers for each question. 
+
+```{r}
+answers %<>% 
+  group_by(ParentId) %>% 
+  summarise(n.answers = n()) %>% 
+  left_join(answers, ., by = "ParentId")
+```
+
+```{r}
+answers %>% 
+  ggplot(aes(x = n.answers)) +
+  geom_histogram(bins = 30)
+```
+
+Most questions have fewer than 5 answers and the max is 11. 
+
+#### What proportion of questions have an accepted answer?
+
+```{r}
+answers %>% 
+  group_by(IsAcceptedAnswer) %>% 
+  summarise(prop = n() / nrow(.)) %>% 
+  kable(digits = 2)
+```
+
+Pretty much an even split between accepted and not accepted answers, with a few more questions without accepted answers. I think this could be both an interesting outcome and an interesting predictor for subsequent analyses.
+
+#### How much time typically passes between a question and a response?
+
+```{r}
+answers %<>% 
+  mutate(time_diff_sec = as.numeric(CreationDate - CreationDate.q),
+         time_diff_min = time_diff_sec / 60, 
+         time_diff_hours = time_diff_min / 60, 
+         time_diff_days = time_diff_hours / 24)
+```
+
+TODO: gather the reduant columns to put this data in tidy format: variables in columns and observations in rows. 
+
+```{r}
+answers %<>% gather(key = unit, value = time_diff, ... = time_diff_sec:time_diff_days)
+answers %<>% gather(key = unit, value = time_diff, ... = time_diff_sec:time_diff_days)
+```
+
+
+
+

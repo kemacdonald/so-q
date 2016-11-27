@@ -1,0 +1,133 @@
+---
+title: "Stack-Tags Analysis"
+author: "Kyle MacDonald"
+date: "11/25/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo=T, warning=F, cache=F, message=F, sanitize = T)
+library(lme4)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(stringr)
+library(lubridate)
+theme_set(theme_bw())
+```
+
+## Load and clean dataset
+
+These data are organized into three tables:
+
+* Questions contains the title, body, creation date, score, and owner ID for each R question.
+* Answers contains the body, creation date, score, and owner ID for each of the answers to these questions. The ParentId column links back to the Questions table.
+* Tags contains the tags on each question besides the R tag.
+
+```{r load_data, echo = FALSE, cache = T}
+#answers <- read_csv("../data/Answers.csv", progress = FALSE)
+questions <- read_csv("../data/Questions.csv", progress = FALSE)
+tags <- read_csv("../data/Tags.csv", progress = FALSE)
+```
+
+Merge question information with tags.
+
+```{r}
+tags <- questions %>% 
+  select(Id, Score, OwnerUserId, CreationDate) %>% 
+  left_join(tags, ., by = "Id")
+```
+
+Split date-time variable.
+
+```{r}
+tags %<>% 
+  mutate(yr = year(CreationDate),
+         mon = month(CreationDate), 
+         dy = day(CreationDate))
+```
+
+Filter dataset to remove questions with extreme scores and to remove the year 2008, which did not have very much data.
+
+```{r}
+tags %<>%
+   filter(Score <= mean(Score) + 2*sd(Score), 
+         Score >= mean(Score) - 2*sd(Score),
+         year(CreationDate) > 2008)
+```
+
+## Descriptives 
+
+Get the distribution of questions over number of tags.
+
+```{r}
+tags %<>% 
+  group_by(Id) %>% 
+  summarise(n.tag = n()) %>% 
+  left_join(tags, ., by = "Id")
+```
+
+Now plot the proportion of questions that used 1-4 tags.
+
+```{r}
+tags %>%
+  group_by(n.tag) %>% 
+  summarise(tag.prop = n() / nrow(.)) %>% 
+  ggplot(aes(x = n.tag, y = tag.prop)) +
+  geom_bar(stat = "identity")
+```
+
+Most questions have 1 or 2 tags. 
+
+## Tag analysis
+
+#### Does the number of tags affect the question score?
+
+```{r}
+tags %>% 
+  ggplot(aes(x = n.tag, y = Score, group = n.tag)) + 
+  geom_boxplot()
+```
+
+Nope!
+
+#### Has the number of tags people use changed over time?
+
+```{r}
+tags %>% 
+  group_by(mon, yr) %>% 
+  summarise(m.tag = mean(n.tag)) %>% 
+  ggplot(aes(x = mon, y = m.tag, color = as.factor(yr), group = yr)) +
+  geom_line()
+```
+
+No changes over the course of a year, which makes sense. And it looks like 2009 is noisy or when tags were first introduced, meaning the community was still figuring out how to use them. 
+
+What if we collapse across months to just look at the change over years.
+
+```{r}
+tags %>% 
+  group_by(yr) %>% 
+  summarise(m.tag = mean(n.tag),
+            n = n()) %>% 
+  ggplot(aes(x = yr, y = m.tag)) +
+  geom_smooth(se=F) +
+  geom_point(aes(size = n)) + 
+  ylim(1, 4)
+```
+
+Maybe a slight increase in tag use, but not much going on here.
+
+```{r}
+m1 <- lmer(n.tag ~ scale(yr) + (1|OwnerUserId), data = tags)
+
+broom::tidy(m1) %>% kable(digits = 3)
+```
+
+Yep, very small, but reliable effect of year: tag use is increasing over time, but in very small increments that are likely not practically meaningful.
+
+
+## Dimensionality reduction on tags
+
+TODO: figure out how to compress the number of tags using some kind of unsupervised learning algorithm, e.g., cluster analysis or PCA. 

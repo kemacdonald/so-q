@@ -70,10 +70,9 @@ answers %<>%
          year(CreationDate) > 2008)
 ``` 
 
-
 ## Descriptives
 
-#### What is the distribution of answer scores.
+#### What is the distribution of answer scores?
 
 ```{r}
 answers %>% 
@@ -83,7 +82,7 @@ answers %>%
 
 Scores fall between [-2, 20] with the majority of the scores being between [0,6].
 
-#### What is the distribution of the number of answers for each question. 
+#### What is the distribution of the number of answers for each question? 
 
 ```{r}
 answers %<>% 
@@ -104,8 +103,8 @@ Most questions have fewer than 5 answers and the max is 11.
 
 ```{r}
 answers %>% 
-  group_by(IsAcceptedAnswer) %>% 
-  summarise(prop = n() / nrow(.)) %>% 
+  group_by(Answer_accepted = IsAcceptedAnswer) %>% 
+  summarise(proportion = n() / nrow(.)) %>% 
   kable(digits = 2)
 ```
 
@@ -121,13 +120,206 @@ answers %<>%
          time_diff_days = time_diff_hours / 24)
 ```
 
-TODO: gather the reduant columns to put this data in tidy format: variables in columns and observations in rows. 
+Let's do some tidying up: we gather the reduant columns to put variables in columns and observations in rows. 
 
 ```{r}
-answers %<>% gather(key = unit, value = time_diff, ... = time_diff_sec:time_diff_days)
-answers %<>% gather(key = unit, value = time_diff, ... = time_diff_sec:time_diff_days)
+answers %<>% gather(key = unit, value = time_diff, ... = time_diff_sec:time_diff_days) %>% 
+  mutate(unit = str_replace(pattern = "time_diff", replacement = ""))
+  
+answers %<>% gather(key = date_q_a, value = date, ... = CreationDate, CreationDate.q) %>% 
+  mutate(date_q_a = ifelse(date_q_a == "CreationDate.q", "answer", "question"))
+```
+
+What's the distribution of intervals between a question and answer?
+
+```{r}
+library(lazyeval)
+
+summary_fun <- function(data_frame, summary_column) {
+  results <- data_frame %>% 
+    summarise_(mean_val = interp(~mean(var), var = as.name(summary_column)),
+               med_val = interp(~median(var), var = as.name(summary_column)),
+               sd_val = interp(~sd(var), var = as.name(summary_column)),
+               min_val = interp(~min(var), var = as.name(summary_column)),
+               max_val = interp(~max(var), var = as.name(summary_column))
+               ) %>% 
+    mutate_if(.predicate = is.numeric, round, digits = 4)
+  
+  return(results)
+}
+```
+
+```{r}
+answers %>% 
+  group_by(unit) %>% 
+  do(summary_fun(., summary_column = "time_diff")) %>% 
+  kable()
+```
+
+There's quite a difference between the median and the mean values for the interval measure. This is driven by the presence of extremely large intervals. Let's visualize to try to see what's going on. 
+
+```{r}
+answers %>% 
+  ggplot(aes(x = time_diff)) +
+  geom_histogram() +
+  facet_wrap(~unit, scales = "free", ncol = 4)
+```
+
+Yep, those are some long tails! Let's clean up the data to remove the extreme values. (Although these might be interesting to look at in a different analysis: what kind of question has a delay of 1000 days?)
+
+```{r}
+remove_extr_vals_fun <- function(data_frame, filter_column, num_sd = 2) {
+  # get the values we need to do the filtering
+  m_val <- mean(data_frame[[filter_column]], na.rm = T)
+  sd_val <- sd(data_frame[[filter_column]], na.rm = T)
+  upper_boundary <- m_val + (num_sd * sd_val)
+  lower_boundary <- m_val - (num_sd * sd_val)
+  # use SE version of filter to apply the filter using the named variables
+  results <- data_frame %>% 
+    filter_(
+      interp(~ which_column >= lower_boundary, which_column = as.name(filter_column)),
+      interp(~ which_column <= upper_boundary, which_column = as.name(filter_column))
+    )
+
+  return(results)
+}
+
+
+answers.filt <- answers %>% 
+  group_by(unit) %>% 
+  do(remove_extr_vals_fun(., filter_column = "time_diff", num_sd = 1)) %>% 
+  filter(time_diff > 0)
+```
+
+```{r}
+answers.filt %>% 
+  ggplot(aes(x = time_diff)) +
+  geom_histogram() +
+  facet_wrap(~unit, scales = "free", ncol = 4)
+
+answers.filt %>% 
+  group_by(unit) %>% 
+  do(summary_fun(., summary_column = "time_diff")) %>% 
+  kable()
+```
+
+This looks a little better in that now the longest interval that we have is 250 days. Note that we also remove the negative intervals (not sure what's going on with those?). 
+
+#### Has the interval between question and answer changed over time?
+
+```{r}
+library(directlabels)
+
+answers.filt %>% 
+  filter(unit == "hours", yr.a != 2009) %>% 
+  group_by(yr.a, mon.a) %>% 
+  summarise(md = median(time_diff), n_qs = n()) %>% 
+  ggplot(aes(x = as.factor(mon.a), y = md, 
+             color = as.factor(yr.a))) +
+  geom_point(aes(size = n_qs), alpha = 0.5) + 
+  geom_line(aes(group=yr.a)) +
+  labs(
+    x = "month",
+    y = "median interval (hours)",
+    size = "Num. Qs"
+  ) +
+  guides(color = F) +
+  geom_dl(aes(label = yr.a), method = list("last.points", cex=1.2)) 
+```
+
+Something is going on with the intervals in 2009 -- they are on a totally different scale compared to the rest of the years. So I filtered this year out. It looks like the interval is relatively steady across the calendar year, except for 2010 and 2011, but these years have the least amount of data.
+
+```{r}
+library(ggrepel)
+
+answers.filt %>% 
+  filter(unit == "hours", yr.a != 2009) %>% 
+  group_by(yr.a) %>% 
+  summarise(median_val = median(time_diff), mean_val = mean(time_diff), n_qs = n()) %>% 
+  gather(key = cent_tend, value = value, median_val:mean_val) %>% 
+  ggplot(aes(x = as.factor(yr.a), y = value)) +
+  geom_point(aes(size = n_qs), alpha = 0.5) +
+  geom_line(group = 1) +
+  labs(
+    x = "year",
+    y = "interval (hours)",
+    size = "Num. Qs"
+  ) +
+  geom_dl(aes(label = n_qs), method = "smart.grid") +
+  facet_wrap(~cent_tend, scales = "free")
+```
+
+Whoa, this is wild. Depending on the measure of central tendency that we choose, we see quite different patterns of change over time. The mean of interval is getting longer, while the median interval is getting shorter. There's something weird about this analysis since questions that are asked earlier in time can achieve delays that more recent questions cannot. 
+
+We need some way to normalize across the years. One idea is to limit the analysis to a fixed interval, that is only include question-answer combinations that occurred within one year of each other. I think this should allow each year to have an equal shot at different intervals.
+
+```{r}
+ci.fun.gen <- function(data_frame, column_name, threshold = 0.975) {
+  data_vec <- data_frame[[column_name]]
+  # get the mean, standard deviation, and sample size
+  m <- mean(data_vec, na.rm=T)
+  stdev <- sd(data_vec, na.rm=T)
+  n <- length(data_vec)
+  # compute 95% ci bounds
+  ci_bound_upper <- m + qnorm(threshold)*stdev/sqrt(n)
+  ci_bound_lower <- m - qnorm(threshold)*stdev/sqrt(n)
+
+  results <- data.frame(mean_val = m, 
+                        ci_upper = ci_bound_upper,
+                        ci_lower = ci_bound_lower,
+                        n = n)
+  return(results)
+}
 ```
 
 
+```{r}
+n_hours_year <- 365 * 24
 
+answers.agg <- answers.filt %>% 
+  filter(unit == "hours", time_diff <= n_hours_year, time_diff > 0) %>% 
+  mutate(time_bin = cut(time_diff, 4)) %>% 
+  group_by(yr.a, time_bin) %>% 
+  summarise(median_val = median(time_diff), mean_val = mean(time_diff), n_qs = n()) %>% 
+  gather(key = cent_tend, value = value, median_val:mean_val) 
+```
 
+```{r}  
+ggplot(aes(x = as.factor(yr.a), y = value), data = answers.agg) +
+  geom_point(aes(size = n_qs), alpha = 0.5) +
+  geom_line(group = 1) +
+  labs(
+    x = "year",
+    y = "interval (hours)",
+    size = "Num. Qs"
+  ) +
+  facet_grid(time_bin~cent_tend, scales = "free")
+```
+
+Let's plot our uncertainty about our measure of central tendency for each year. Note that I'm filtering the data to only include questions that were answered within one week.
+
+```{r}
+n_hours_day <- 24
+n_hours_week <- 7 * n_hours_day
+
+answers.filt %>% 
+  filter(unit == "hours", time_diff <= n_hours_week, time_diff > 0) %>% 
+  mutate(time_bin = cut(time_diff, 4)) %>% 
+  group_by(yr.a) %>% 
+  do(ci.fun.gen(., column_name = "time_diff", threshold = 0.975)) %>%
+  ggplot(aes(x = as.factor(yr.a), y = mean_val)) +
+  geom_linerange(aes(ymax = ci_upper, ymin = ci_lower), size = 1) +
+  geom_line(group = 1, size = 1) +
+  labs(
+    x = "year",
+    y = "mean interval (hours)",
+    size = "Num. Qs"
+  ) +
+  geom_label(aes(label = n), vjust = "inward", nudge_y = 0.25)
+```
+
+Interval decreased between 2009-2011. Stayed around 5 hours between 2011-2013; and started to increase between 2014-2016. I don't have any hypotheses to explain this pattern, but it would be interesting to see what features in the questions influence how long it takes to get a response.
+
+## Predicting interval between question and answer
+
+TODO: build an understanding of the features that predict the time it takes for a question to get a response.

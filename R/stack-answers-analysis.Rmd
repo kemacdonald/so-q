@@ -4,12 +4,6 @@ author: "Kyle MacDonald"
 date: "11/25/2016"
 output: html_document
 ---
----
-title: "Stack-Tags Analysis"
-author: "Kyle MacDonald"
-date: "11/25/2016"
-output: html_document
----
 
 ```{r setup, include=FALSE}
 rm(list=ls())
@@ -123,10 +117,11 @@ answers %<>%
 Let's do some tidying up: we gather the reduant columns to put variables in columns and observations in rows. 
 
 ```{r}
-answers %<>% gather(key = unit, value = time_diff, ... = time_diff_sec:time_diff_days) %>% 
-  mutate(unit = str_replace(pattern = "time_diff", replacement = ""))
+answers %<>% gather(key = unit, 
+                    value = time_diff, time_diff_sec:time_diff_days) %>% 
+  mutate(unit = str_replace(unit, pattern = "time_diff_", replacement = ""))
   
-answers %<>% gather(key = date_q_a, value = date, ... = CreationDate, CreationDate.q) %>% 
+answers %<>% gather(key = date_q_a, value = date, CreationDate, CreationDate.q) %>% 
   mutate(date_q_a = ifelse(date_q_a == "CreationDate.q", "answer", "question"))
 ```
 
@@ -183,8 +178,9 @@ remove_extr_vals_fun <- function(data_frame, filter_column, num_sd = 2) {
 
   return(results)
 }
+```
 
-
+```{r}
 answers.filt <- answers %>% 
   group_by(unit) %>% 
   do(remove_extr_vals_fun(., filter_column = "time_diff", num_sd = 1)) %>% 
@@ -315,11 +311,54 @@ answers.filt %>%
     y = "mean interval (hours)",
     size = "Num. Qs"
   ) +
-  geom_label(aes(label = n), vjust = "inward", nudge_y = 0.25)
+  geom_label(aes(label = paste(n, "Qs")), vjust = "inward", nudge_y = 0.25)
 ```
 
 Interval decreased between 2009-2011. Stayed around 5 hours between 2011-2013; and started to increase between 2014-2016. I don't have any hypotheses to explain this pattern, but it would be interesting to see what features in the questions influence how long it takes to get a response.
 
 ## Predicting interval between question and answer
 
-TODO: build an understanding of the features that predict the time it takes for a question to get a response.
+#### Do questions with higher scores get answered faster?
+
+```{r}
+answers.filt %<>% filter(unit == "hours", time_diff <= n_hours_week, time_diff > 0)
+```
+
+```{r}
+answers.filt %>% 
+  mutate(score_binned.q = cut(Score.q, 10)) %>% 
+  group_by(score_binned.q) %>% 
+  do(ci.fun.gen(., column_name = "time_diff", threshold = 0.975)) %>%
+  ggplot(aes(x = score_binned.q, y = mean_val)) +
+  geom_linerange(aes(ymax = ci_upper, ymin = ci_lower), size = 1) +
+  geom_point(aes(size = n)) +
+  labs(
+    x = "binned question score",
+    y = "mean interval (hours)",
+    size = "Num. Qs"
+  ) 
+```
+
+Looks like there's a nonlinear pattern, but very different amounts of data going into each of these buckets. 
+
+Let's try to plot subset of the raw data.
+
+```{r}
+answers.filt %>% 
+  filter(Score.q >= 0, Score.q <= 10) %>% 
+  group_by(Score.q) %>% 
+  do(ci.fun.gen(., column_name = "time_diff", threshold = 0.975)) %>%
+  ggplot(aes(x = Score.q, y = mean_val)) +
+  geom_linerange(aes(ymax = ci_upper, ymin = ci_lower), size = 1) +
+  geom_point(aes(size = n)) +
+  geom_smooth() +
+  labs(
+    x = "question score",
+    y = "mean interval (hours)",
+    size = "Num. Qs"
+  ) +
+  geom_label(aes(label = paste(n, "Qs")), vjust = "inward", nudge_y = 0.25) 
+```
+
+
+

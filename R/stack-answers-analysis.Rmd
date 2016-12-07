@@ -74,7 +74,7 @@ answers %>%
   geom_histogram(bins = 20)
 ```
 
-Scores fall between [-2, 20] with the majority of the scores being between [0,6].
+Scores fall between [-2, 20] with the majority of the scores being between [0,6]. Note that we might want to transform the score variable to make this distribution "more normal" looking.
 
 #### What is the distribution of the number of answers for each question? 
 
@@ -114,6 +114,7 @@ answers %<>%
          time_diff_days = time_diff_hours / 24)
 ```
 
+
 Let's do some tidying up: we gather the reduant columns to put variables in columns and observations in rows. 
 
 ```{r}
@@ -151,7 +152,9 @@ answers %>%
   kable()
 ```
 
-There's quite a difference between the median and the mean values for the interval measure. This is driven by the presence of extremely large intervals. Let's visualize to try to see what's going on. 
+There's quite a difference between the median and the mean values for the interval measure. This is driven by the presence of extremely large intervals. Also there are negative intervals, which we know is not possible. 
+
+Let's visualize to try to see what's going on. 
 
 ```{r}
 answers %>% 
@@ -199,7 +202,7 @@ answers.filt %>%
   kable()
 ```
 
-This looks a little better in that now the longest interval that we have is 250 days. Note that we also remove the negative intervals (not sure what's going on with those?). 
+This looks a little better in that now the longest interval that we have is 250 days. 
 
 #### Has the interval between question and answer changed over time?
 
@@ -210,17 +213,18 @@ answers.filt %>%
   filter(unit == "hours", yr.a != 2009) %>% 
   group_by(yr.a, mon.a) %>% 
   summarise(md = median(time_diff), n_qs = n()) %>% 
-  ggplot(aes(x = as.factor(mon.a), y = md, 
+  ggplot(aes(x = mon.a, y = md, 
              color = as.factor(yr.a))) +
+  geom_smooth(se = T, span = 1) +
   geom_point(aes(size = n_qs), alpha = 0.5) + 
-  geom_line(aes(group=yr.a)) +
   labs(
     x = "month",
     y = "median interval (hours)",
     size = "Num. Qs"
   ) +
   guides(color = F) +
-  geom_dl(aes(label = yr.a), method = list("last.points", cex=1.2)) 
+  geom_dl(aes(label = yr.a), method = list("last.points", cex=1.2)) +
+  theme(legend.position = "top")
 ```
 
 Something is going on with the intervals in 2009 -- they are on a totally different scale compared to the rest of the years. So I filtered this year out. It looks like the interval is relatively steady across the calendar year, except for 2010 and 2011, but these years have the least amount of data.
@@ -233,9 +237,10 @@ answers.filt %>%
   group_by(yr.a) %>% 
   summarise(median_val = median(time_diff), mean_val = mean(time_diff), n_qs = n()) %>% 
   gather(key = cent_tend, value = value, median_val:mean_val) %>% 
-  ggplot(aes(x = as.factor(yr.a), y = value)) +
+  filter(value > 0) %>% 
+  ggplot(aes(x = yr.a, y = value)) +
   geom_point(aes(size = n_qs), alpha = 0.5) +
-  geom_line(group = 1) +
+  geom_smooth(se = F, span = 1) +
   labs(
     x = "year",
     y = "interval (hours)",
@@ -246,7 +251,6 @@ answers.filt %>%
 ```
 
 Whoa, this is wild. Depending on the measure of central tendency that we choose, we see quite different patterns of change over time. The mean of interval is getting longer, while the median interval is getting shorter. There's something weird about this analysis since questions that are asked earlier in time can achieve delays that more recent questions cannot. 
-
 We need some way to normalize across the years. One idea is to limit the analysis to a fixed interval, that is only include question-answer combinations that occurred within one year of each other. I think this should allow each year to have an equal shot at different intervals.
 
 ```{r}
@@ -308,7 +312,7 @@ answers.filt %>%
   geom_line(group = 1, size = 1) +
   labs(
     x = "year",
-    y = "mean interval (hours)",
+    y = "mean response time (hours)",
     size = "Num. Qs"
   ) +
   geom_label(aes(label = paste(n, "Qs")), vjust = "inward", nudge_y = 0.25)
@@ -339,7 +343,7 @@ answers.filt %>%
   ) 
 ```
 
-Looks like there's a nonlinear pattern, but very different amounts of data going into each of these buckets. 
+Looks like there's a nonlinear pattern, but there are very different amounts of data going into each of these buckets. 
 
 Let's try to plot subset of the raw data.
 
@@ -351,14 +355,71 @@ answers.filt %>%
   ggplot(aes(x = Score.q, y = mean_val)) +
   geom_linerange(aes(ymax = ci_upper, ymin = ci_lower), size = 1) +
   geom_point(aes(size = n)) +
-  geom_smooth() +
+  geom_smooth(se = F, span = 1) +
   labs(
     x = "question score",
     y = "mean interval (hours)",
     size = "Num. Qs"
   ) +
-  geom_label(aes(label = paste(n, "Qs")), vjust = "inward", nudge_y = 0.25) 
+  geom_label(aes(label = paste(n, "Qs")), vjust = "inward", nudge_y = 0.25) +
+  theme(legend.position = "top")
 ```
 
+### Exploring variable transformations
+
+The distribution of scores are interesting in that they can be negative and that the majority of scores are concentrated betweeen 0-3. Here I will play around with some log transforms to see if this changes our interpretation of the relationship between question score and response time.
+
+```{r}
+a <- seq_along(0:100)
+
+tibble(a, log_a = log(a), log2_a = log2(a), log10_a = log10(a)) %>% 
+  gather(key = tranform_type, value = value, log_a:log10_a) %>% 
+  ggplot(aes(x = a, y = value, color = tranform_type)) + 
+  geom_line(size = 1)
+```
+
+```{r}
+# note that we add one to each value so the log transform doesn't return -Inf 
+answers.filt %<>% 
+  mutate(log_time_diff = log(time_diff + 1),
+         log_Score.q = log(ifelse(Score.q == 0, Score.q + 1, Score.q)),
+         log_Score = log(ifelse(Score == 0, Score + 1, Score)))
+```
+
+Plot the transformed variables.
+
+```{r}
+answers.filt %>% 
+ggplot(aes(x = log_time_diff)) +
+  geom_histogram()
+```
+
+The log transform makes the response time distribution look a little better. 
+
+```{r}
+answers.filt %>% 
+ggplot(aes(x = log_Score)) +
+  geom_histogram()
+```
+
+But I'm not sure it helps the Score variable since we have so many scores that are either 0 or 1, and when you log transform it, you just get a bunch of 0s. I will need to think more about how to model Score as an outcome variable.
+
+```{r}
+answers.filt %>% 
+  filter(Score.q >= 0, Score.q <= 10) %>% 
+  group_by(Score.q) %>% 
+  do(ci.fun.gen(., column_name = "log_time_diff", threshold = 0.975)) %>%
+  ggplot(aes(x = Score.q, y = mean_val)) +
+  geom_linerange(aes(ymax = ci_upper, ymin = ci_lower), size = 1) +
+  geom_point() +
+  geom_smooth(se = F, span = 1) +
+  labs(
+    x = "question score",
+    y = "mean response (hours)",
+    size = "Num. Qs"
+  ) +
+  geom_label(aes(label = paste(n, "Qs")), vjust = "inward", nudge_y = 0.01) +
+  theme(legend.position = "top")
+```
 
 
